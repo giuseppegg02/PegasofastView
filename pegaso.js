@@ -21,17 +21,26 @@
         console.log(progressBar.getAttribute('aria-valuenow'));
   
          // riproduce in automatico
-         window.onload = function(){
           console.log("cerco di cliccare");
-  
-          var button = document.getElementById('fa-play-circle');
-          console.log(button);
-  
-          setInterval(function(){
-            button.click();
-            console.log("ho cliccato");
-  
-          },1000); // this will make it click again every 1000 miliseconds
+            // Seleziona tutti gli elementi con classe btn-default
+            var buttons = document.querySelectorAll('.btn-default');
+
+            // Itera sugli elementi
+            for (var i = 0; i < buttons.length; i++) {
+            // Verifica se l'elemento ha l'ID control-play
+            if (buttons[i].id === 'control-play') {
+                console.log(buttons[i].id);
+        
+                setInterval(function(){
+                    buttons[i].click();
+                    console.log("ho cliccato");},1000); // this will make it click again every 1000 miliseconds
+                // L'elemento esiste
+                
+                var playButton = buttons[i];
+                break;
+            
+}
+          
         };
   
         // se esiste e vale 100
