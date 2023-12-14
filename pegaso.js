@@ -20,48 +20,67 @@
       // se esiste progress bar
       if (progressBar) {
         console.log(progressBar.getAttribute('aria-valuenow'));
-        console.log("Elemento progressbar trovato");
 
       
           
             // Seleziona tutti gli elementi con classe btn-default
             var buttons = document.querySelectorAll('.btn-default');
-
+            var albero =0;
             // Itera sugli elementi
-            for (var i = 0; i < buttons.length; i++) {// Verifica se l'elemento ha l'ID control-play
-            if (buttons[i].id === 'control-play') {buttons[i].click();break;}};
+            for (var i = 0; i < buttons.length; i++) {
+              // Verifica se l'elemento ha l'ID control-play
+              if (buttons[i].id === 'control-play') {
+                buttons[i].click();
+                //setTimeout(2000);
+
+                
+
+
+                
+                if (progressBar.getAttribute('aria-valuenow')==100){
+                  console.log("if 100")
+  
+                  console.log("prossima lezione");
+                  var firstEmptyCheck = document.querySelector('.icon-check-empty');
+                  firstEmptyCheck.click();
+                }else{}
+               //console.log("attesa 2 secondi")
+                setTimeout(2000);
+
+                }
+            };
   
         // se esiste e vale 100
-        if (progressBar.getAttribute('aria-valuenow')==100){
-  
-          console.log("prossima lezione");
-          var firstEmptyCheck = document.querySelector('.icon-check-empty');
-          firstEmptyCheck.click();
-        }
+
   
 
       } else {
-          console.log("Elemento progressbar non trovato");
+        console.log("non ho trovato la progress");
 
-         if (document.querySelector('.panel-body'))
-        {var esatte = document.querySelector('.scriptBtn');
-        esatte.click();
-        }else {}
-        var exitfromscreen = document.querySelectorAll('.fa-angle-double-left');
-        exitfromscreen.click();
+
+        var firstEmptyCheck = document.querySelector('.icon-check-empty');
+        window.location.href = "https://lms-courses.pegaso.multiversity.click/main/lp-video_student_view/lp-video_controller.php";
+
+
+        if (firstEmptyCheck){
+          console.log("non sono entrato nell'if");
+
+        firstEmptyCheck.click();
+        
+        }else{
+          console.log("provo ad uscire");
+          document.addEventListener("DOMContentLoaded", goToLink);
+
+          var mappa = document.querySelectorAll('.fa-angle-double-left');
+          mappa.click();
+      }
+
   
-  
-        // esce dalle lezioni interne
-  
-  
-  
-        var mainscreen = document.querySelector('.espandi');
-        espandi.click()
-  
+        
   
       }
     }
-
+  
 
     function countListGroupItems() {
       
