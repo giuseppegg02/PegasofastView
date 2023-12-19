@@ -30,13 +30,7 @@
             for (var i = 0; i < buttons.length; i++) {
               // Verifica se l'elemento ha l'ID control-play
               if (buttons[i].id === 'control-play') {
-                buttons[i].click();
-                //setTimeout(2000);
-
-                
-
-
-                
+                buttons[i].click();            
                 if (progressBar.getAttribute('aria-valuenow')==100){
                   console.log("if 100")
   
@@ -51,15 +45,9 @@
             };
   
         // se esiste e vale 100
-
-  
-
       } else {
         console.log("non ho trovato la progress");
-
-
         var firstEmptyCheck = document.querySelector('.icon-check-empty');
-        window.location.href = "https://lms-courses.pegaso.multiversity.click/main/lp-video_student_view/lp-video_controller.php";
 
 
         if (firstEmptyCheck){
@@ -68,16 +56,16 @@
         firstEmptyCheck.click();
         
         }else{
-          console.log("provo ad uscire");
+          console.log("provo ad uscire");        
+          
+        
+        window.location.href = "https://lms-courses.pegaso.multiversity.click/main/lp-video_student_view/lp-video_controller.php";
           document.addEventListener("DOMContentLoaded", goToLink);
 
           var mappa = document.querySelectorAll('.fa-angle-double-left');
           mappa.click();
       }
 
-  
-        
-  
       }
     }
   
@@ -103,9 +91,5 @@
       if (Notification.permission !== 'granted') {Notification.requestPermission();}
   
     };
-  
-   
-  
-  
-  
+
   })();
