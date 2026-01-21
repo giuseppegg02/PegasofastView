@@ -54,6 +54,14 @@
     }
 
     function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+    function parseDuration(text) {
+        if (!text) return Infinity;
+        const parts = text.split(':').map(Number);
+        if (parts.some(n => Number.isNaN(n))) return Infinity;
+        if (parts.length === 2) return parts[0] * 60 + parts[1];
+        if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+        return Infinity;
+    }
 
     // ============ ANALISI DOM & SEZIONI ============
 
@@ -103,8 +111,13 @@
             const titleEl = row.querySelector('.text-base.flex.justify-between .mb-2');
             const title = titleEl ? titleEl.textContent.trim() : `Lezione ${index}`;
             const titleLower = title.toLowerCase();
+            const durationEl = row.querySelector('.text-sm.text-platform-gray');
+            const durationText = durationEl ? durationEl.textContent.trim() : '';
+            const durationSeconds = parseDuration(durationText);
 
-            const isObjective = row.querySelector('.bg-platform-green\\/20') !== null;
+            // Rileva obiettivi usando l'icona bullseye-arrow o il badge verde chiaro
+            const hasBullseyeIcon = row.querySelector('path[id="bullseye-arrow"]') !== null;
+            const isObjective = hasBullseyeIcon || row.querySelector('.bg-platform-green\\/20') !== null || titleLower === 'obiettivi';
             const hasGreenIcon = row.querySelector('path[fill="#00C49A"]') !== null || row.querySelector('path[fill="#2FA33D"]') !== null;
             const progressFull = !!row.querySelector('[style*="width: 100%"][class*="bg-platform-green"]');
             const isCompleted = hasGreenIcon || progressFull;
@@ -116,20 +129,59 @@
                     element: row,
                     title,
                     type: isObjective ? 'objective' : 'video',
-                    id: index
+                    id: index,
+                    durationSeconds: isObjective ? 0 : durationSeconds
                 });
             } else {
                 state.alreadyDone++;
             }
         });
 
+        const objectives = state.queue.filter(i => i.type === 'objective');
+        const videos = state.queue.filter(i => i.type === 'video').sort((a, b) => a.durationSeconds - b.durationSeconds);
+        state.queue = [...objectives, ...videos];
+
         log(`Analisi: Trovate ${state.totalFound}. Già fatte: ${state.alreadyDone}. Mancanti: ${state.queue.length}`, 'info');
+        log(`📍 OBIETTIVI DA COMPLETARE: ${objectives.length}`, 'warn');
+        objectives.forEach((obj, idx) => log(`  ${idx + 1}. ${obj.title}`, 'info'));
+        log(`🎬 VIDEO DA COMPLETARE: ${videos.length} (ordinati per durata)`, 'warn');
+        if (state.queue.length > 0) {
+            log(`⏭️  PROSSIMO: ${state.queue[0].title} [${state.queue[0].type}]`, 'step');
+        }
         localStorage.setItem('pegaso_missing_queue', JSON.stringify(state.queue.map(i => i.title)));
         updateUI();
         return state.queue.length > 0;
     }
 
     // ============ AUTOMAZIONE ============
+
+    async function processItems(items) {
+        state.queue = items;
+        state.currentIndex = 0;
+        updateUI();
+
+        for (let i = 0; i < items.length; i++) {
+            state.currentIndex = i;
+            const item = items[i];
+
+            log(`Elaborazione ${i + 1}/${items.length}: ${item.title} [${item.type}]`, 'step');
+
+            item.element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            await sleep(500);
+
+            const clickTarget = item.element.closest('.cursor-pointer') || item.element;
+            clickTarget.click();
+
+            if (item.type === 'objective') {
+                await sleep(3500);
+                markLocalAsDone(item.title);
+            } else if (item.type === 'video') {
+                await handleVideo();
+                markLocalAsDone(item.title);
+                await sleep(2000);
+            }
+        }
+    }
 
     async function processQueue() {
         if (state.queue.length === 0) {
@@ -141,34 +193,23 @@
         state.status = 'playing';
         updateUI();
 
-        // Processa la coda
-        for (let i = 0; i < state.queue.length; i++) {
-            state.currentIndex = i;
-            const item = state.queue[i];
+        // Prima tutti gli obiettivi
+        const objectives = state.queue.filter(i => i.type === 'objective');
+        if (objectives.length) {
+            log(`🎯 FASE 1: Completamento di ${objectives.length} OBIETTIVI`, 'success');
+            await processItems(objectives);
+            log(`✅ FASE 1 COMPLETATA: Tutti gli obiettivi sono stati visitati`, 'success');
+        }
 
-            log(`Elaborazione ${i + 1}/${state.queue.length}: ${item.title} [${item.type}]`, 'step');
-
-            // Scroll e Click
-            item.element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            await sleep(500);
-
-            // Simuliamo il click sull'elemento cliccabile interno
-            const clickTarget = item.element.closest('.cursor-pointer') || item.element;
-            clickTarget.click();
-
-            if (item.type === 'objective') {
-                // Gli obiettivi si completano "visitandoli".
-                // Aspettiamo un po' e verifichiamo se appare la spunta verde (opzionale)
-                await sleep(3500);
-                // Si passa al prossimo
-                markLocalAsDone(item.title);
-            }
-            else if (item.type === 'video') {
-                // Gestione Video
-                await handleVideo();
-                markLocalAsDone(item.title);
-                await sleep(2000); // Pausa tra video
-            }
+        // Riesegui la scansione dopo aver aperto gli obiettivi, poi esegui solo i video (ordinati per durata)
+        log(`🔄 Riscansione per aggiornare la lista video...`, 'step');
+        await expandAllSections();
+        analyzeLessons();
+        const videos = state.queue.filter(i => i.type === 'video');
+        if (videos.length) {
+            log(`🎬 FASE 2: Completamento di ${videos.length} VIDEO (dal più corto)`, 'success');
+            await processItems(videos);
+            log(`✅ FASE 2 COMPLETATA: Tutti i video sono stati completati`, 'success');
         }
 
         log('Coda terminata!', 'success');
