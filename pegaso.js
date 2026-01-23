@@ -17,7 +17,9 @@
         AUTO_START: false,       // Se true, parte subito senza aspettare il click
         CHECK_INTERVAL: 1000,
         SCROLL_DELAY: 800,
-        INITIAL_SCAN_DELAY: 1500 // nuovo delay iniziale prima della scansione
+        INITIAL_SCAN_DELAY: 1500, // nuovo delay iniziale prima della scansione
+        VIDEO_MONITOR_INTERVAL: 2000, // Intervallo monitoraggio video (ms) - aumentato per risparmiare risorse
+        HIDE_VIDEO_PLAYER: true  // Se true, nasconde il player quando non serve per risparmiare CPU
     };
 
     // Carica config da LocalStorage o usa default
@@ -122,9 +124,25 @@
             const progressFull = !!row.querySelector('[style*="width: 100%"][class*="bg-platform-green"]');
             const isCompleted = hasGreenIcon || progressFull;
 
-            const isSpecial = titleLower.includes('test di fine lezione') || titleLower.includes('dispensa');
+            // Rileva Test di fine lezione
+            const isTest = titleLower.includes('test di fine lezione');
+            // Rileva se il test ha il pulsante "Esegui" (non completato)
+            const hasEseguiButton = row.querySelector('button') && 
+                                    row.querySelector('button').textContent.trim().toLowerCase().includes('esegui');
+            
+            const isDispensa = titleLower.includes('dispensa');
 
-            if (!isCompleted && !isSpecial) {
+            if (isTest && hasEseguiButton && !isCompleted) {
+                // Test non completato - aggiungilo alla coda
+                log(`📝 TEST TROVATO: "${title}" - Pulsante Esegui presente`, 'info');
+                state.queue.push({
+                    element: row,
+                    title,
+                    type: 'test',
+                    id: index,
+                    durationSeconds: 0
+                });
+            } else if (!isCompleted && !isTest && !isDispensa) {
                 state.queue.push({
                     element: row,
                     title,
@@ -138,13 +156,16 @@
         });
 
         const objectives = state.queue.filter(i => i.type === 'objective');
+        const tests = state.queue.filter(i => i.type === 'test');
         const videos = state.queue.filter(i => i.type === 'video').sort((a, b) => a.durationSeconds - b.durationSeconds);
-        state.queue = [...objectives, ...videos];
+        state.queue = [...objectives, ...tests, ...videos]; // Test dopo obiettivi, prima dei video
 
         log(`Analisi: Trovate ${state.totalFound}. Già fatte: ${state.alreadyDone}. Mancanti: ${state.queue.length}`, 'info');
         log(`📍 OBIETTIVI DA COMPLETARE: ${objectives.length}`, 'warn');
         objectives.forEach((obj, idx) => log(`  ${idx + 1}. ${obj.title}`, 'info'));
         log(`🎬 VIDEO DA COMPLETARE: ${videos.length} (ordinati per durata)`, 'warn');
+        log(`📝 TEST DA COMPLETARE: ${tests.length}`, 'warn');
+        tests.forEach((t, idx) => log(`  ${idx + 1}. ${t.title}`, 'info'));
         if (state.queue.length > 0) {
             log(`⏭️  PROSSIMO: ${state.queue[0].title} [${state.queue[0].type}]`, 'step');
         }
@@ -179,8 +200,140 @@
                 await handleVideo();
                 markLocalAsDone(item.title);
                 await sleep(2000);
+            } else if (item.type === 'test') {
+                await handleTest(item);
+                markLocalAsDone(item.title);
+                await sleep(2000);
             }
         }
+    }
+
+    // ============ GESTIONE TEST DI FINE LEZIONE ============
+    
+    async function handleTest(item) {
+        log(`📝 [TEST] Inizio gestione test: ${item.title}`, 'step');
+
+        function syntheticClick(el) {
+            if (!el) return;
+            el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+            el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+            el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        }
+
+        // Step 1: Trova e clicca il pulsante "Esegui"
+        const eseguiBtn = item.element.querySelector('button');
+        if (eseguiBtn && eseguiBtn.textContent.trim().toLowerCase().includes('esegui')) {
+            log(`📝 [TEST] Trovato pulsante "Esegui", click...`, 'info');
+            syntheticClick(eseguiBtn);
+            await sleep(800);
+        } else {
+            log(`📝 [TEST] Pulsante "Esegui" non trovato nella riga, cerco altrove...`, 'warn');
+            // Fallback: cerca il pulsante Esegui nella pagina
+            const allButtons = document.querySelectorAll('button');
+            for (const btn of allButtons) {
+                if (btn.textContent.trim().toLowerCase().includes('esegui')) {
+                    log(`📝 [TEST] Trovato pulsante "Esegui" alternativo, click...`, 'info');
+                    syntheticClick(btn);
+                    await sleep(800);
+                    break;
+                }
+            }
+        }
+
+        // Step 2: Attendi che la pagina del test si carichi
+        await sleep(600);
+
+        // Step 3: Controlla se è un test vuoto
+        const pageText = document.body.innerText;
+        if (pageText.includes('Non è presente nessun test per questa lezione')) {
+            log(`📝 [TEST] Test vuoto rilevato - nessuna domanda presente`, 'success');
+            await sleep(300);
+            return;
+        }
+
+        // Step 4: Cerca le domande nel contenitore del test
+        log(`📝 [TEST] Cerco domande...`, 'info');
+
+        // Trova tutte le domande (hanno la classe bg-platform-primary-light con il testo della domanda)
+        const questionContainers = document.querySelectorAll('.mt-8.px-4');
+        log(`📝 [TEST] Trovati ${questionContainers.length} contenitori domande`, 'info');
+
+        if (questionContainers.length === 0) {
+            // Fallback: cerca le domande con un altro selettore
+            const questionHeaders = document.querySelectorAll('.bg-platform-primary-light.text-platform-primary');
+            log(`📝 [TEST] Fallback: trovate ${questionHeaders.length} intestazioni domande`, 'info');
+
+            if (questionHeaders.length === 0) {
+                log(`📝 [TEST] Nessuna domanda trovata - forse test vuoto o già completato`, 'warn');
+                return;
+            }
+        }
+
+        // Step 5: Selezione in blocco - scegli una risposta per ogni domanda molto rapidamente
+        // Le opzioni sono dentro div con id="0", "1", "2", "3" (A, B, C, D)
+        const answerOptions = document.querySelectorAll('.divide-y-2.bg-white .cursor-pointer[id]');
+        log(`📝 [TEST] Trovate ${answerOptions.length} opzioni di risposta totali`, 'info');
+
+        // Raggruppa le opzioni per domanda (ogni domanda ha 4 opzioni)
+        const questionsCount = Math.floor(answerOptions.length / 4);
+        log(`📝 [TEST] Stima domande: ${questionsCount}`, 'info');
+
+        if (questionsCount > 0) {
+            // Prepariamo una lista di nodi per ogni domanda evitando scroll per velocità
+            const grouped = [];
+            for (let q = 0; q < questionsCount; q++) {
+                const startIdx = q * 4;
+                const opts = Array.from(answerOptions).slice(startIdx, startIdx + 4);
+                if (opts.length) grouped.push(opts);
+            }
+
+            // Seleziona rapidamente una risposta per ogni domanda senza scroll pesanti
+            const letterMap = ['A', 'B', 'C', 'D'];
+            for (let q = 0; q < grouped.length; q++) {
+                const opts = grouped[q];
+                // Scegli la prima opzione valida (più veloce e stabile) o random se preferisci
+                const choiceIdx = 0; // 0..3 - usare 0 per massima velocità
+                const el = opts[choiceIdx] || opts[Math.floor(Math.random() * opts.length)];
+                log(`📝 [TEST] Domanda ${q + 1}: seleziono risposta ${letterMap[choiceIdx]}`, 'info');
+                syntheticClick(el);
+                // Minimo delay per permettere al DOM di aggiornare lo stato (dipende da rete)
+                await sleep(20);
+            }
+        } else {
+            log(`📝 [TEST] Nessuna opzione trovata per le domande - salto selezione bulk`, 'warn');
+        }
+
+        // Step 6: Attendi che appaia il pulsante "Invia"
+        await sleep(200);
+
+        // Step 7: Cerca e clicca il pulsante "Invia"
+        let inviaBtn = null;
+        const allBtns = document.querySelectorAll('button');
+        for (const btn of allBtns) {
+            const btnText = btn.textContent.trim().toLowerCase();
+            if (btnText === 'invia' || btnText.includes('invia')) {
+                inviaBtn = btn;
+                break;
+            }
+        }
+
+        if (inviaBtn) {
+            log(`📝 [TEST] Trovato pulsante "Invia", click...`, 'success');
+            inviaBtn.scrollIntoView({ behavior: 'auto', block: 'center' });
+            await sleep(80);
+            syntheticClick(inviaBtn);
+            await sleep(500);
+            log(`📝 [TEST] Test completato!`, 'success');
+        } else {
+            log(`📝 [TEST] Pulsante "Invia" non trovato - verifico stato...`, 'warn');
+            // Controlla se tutte le risposte sono state selezionate
+            const selectedAnswers = document.querySelectorAll('.divide-y-2.bg-white .cursor-pointer.bg-platform-primary-light');
+            log(`📝 [TEST] Risposte selezionate visibili: ${selectedAnswers.length}`, 'info');
+        }
+
+        // Step 8: Attendi e torna alla lista
+        await sleep(300);
+        log(`📝 [TEST] Fine gestione test`, 'step');
     }
 
     async function processQueue() {
@@ -201,15 +354,26 @@
             log(`✅ FASE 1 COMPLETATA: Tutti gli obiettivi sono stati visitati`, 'success');
         }
 
-        // Riesegui la scansione dopo aver aperto gli obiettivi, poi esegui solo i video (ordinati per durata)
+        // Riscansione ed esegui i test di fine lezione (subito dopo gli obiettivi)
+        log(`🔄 Riscansione per aggiornare la lista test...`, 'step');
+        await expandAllSections();
+        analyzeLessons();
+        const tests = state.queue.filter(i => i.type === 'test');
+        if (tests.length) {
+            log(`📝 FASE 2: Completamento di ${tests.length} TEST DI FINE LEZIONE`, 'success');
+            await processItems(tests);
+            log(`✅ FASE 2 COMPLETATA: Tutti i test sono stati completati`, 'success');
+        }
+
+        // Riesegui la scansione ed esegui i video (ordinati per durata)
         log(`🔄 Riscansione per aggiornare la lista video...`, 'step');
         await expandAllSections();
         analyzeLessons();
         const videos = state.queue.filter(i => i.type === 'video');
         if (videos.length) {
-            log(`🎬 FASE 2: Completamento di ${videos.length} VIDEO (dal più corto)`, 'success');
+            log(`🎬 FASE 3: Completamento di ${videos.length} VIDEO (dal più corto)`, 'success');
             await processItems(videos);
-            log(`✅ FASE 2 COMPLETATA: Tutti i video sono stati completati`, 'success');
+            log(`✅ FASE 3 COMPLETATA: Tutti i video sono stati completati`, 'success');
         }
 
         log('Coda terminata!', 'success');
@@ -222,6 +386,7 @@
     function handleVideo() {
         return new Promise((resolve) => {
             let attempts = 0;
+            let wasPlayingBeforePause = false;
 
             const checkVideo = setInterval(async () => {
                 const video = document.querySelector('video#video');
@@ -232,10 +397,36 @@
                     video.playbackRate = CONFIG.PLAYBACK_SPEED;
                     video.muted = true;
 
+                    // Nascondi il player se configurato
+                    if (CONFIG.HIDE_VIDEO_PLAYER) {
+                        const playerContainer = video.closest('.video-player, [class*="player"], [class*="video"]') || video.parentElement;
+                        if (playerContainer) {
+                            playerContainer.style.visibility = 'hidden';
+                            playerContainer.style.height = '1px';
+                            playerContainer.style.overflow = 'hidden';
+                        }
+                    }
+
                     try { await video.play(); state.isPlaying = true; }
                     catch { video.muted = true; video.play(); }
 
                     updateUI();
+
+                    // Listener per visibilità scheda
+                    const handleVisibilityChange = () => {
+                        if (document.hidden) {
+                            log('Scheda nascosta, pauso video per risparmiare risorse...', 'info');
+                            wasPlayingBeforePause = !video.paused;
+                            video.pause();
+                        } else {
+                            log('Scheda visibile, riprendo video...', 'info');
+                            if (wasPlayingBeforePause) {
+                                video.play().catch(() => {});
+                            }
+                        }
+                    };
+
+                    document.addEventListener('visibilitychange', handleVisibilityChange);
 
                     let stallCount = 0;
                     let lastTime = video.currentTime;
@@ -246,20 +437,37 @@
                         if (!video || !video.duration) return;
 
                         const perc = (video.currentTime / video.duration) * 100;
-                        updateProgressUI(perc, video.currentTime, video.duration);
+                        // Aggiorna UI solo ogni 2 controlli per risparmiare risorse
+                        if (stallCount % 2 === 0) updateProgressUI(perc, video.currentTime, video.duration);
 
                         // Avanza se raggiunta la soglia
                         if (perc >= CONFIG.REQUIRED_PERCENTAGE) { cleanup(); resolve(); return; }
 
-                        // Stall guard: se il tempo non avanza per 12s, passa oltre
+                        // Stall guard: se il tempo non avanza per 24s (2s * 12), chiudi popup e forza play
                         if (video.currentTime - lastTime < 0.1) {
                             stallCount++;
-                            if (stallCount >= 12) { log('Video bloccato, skip.', 'warn'); cleanup(); resolve(); }
+                            if (stallCount >= 12) {
+                                log('Video bloccato - cerco popup da chiudere...', 'warn');
+                                // Cerca il pulsante di chiusura del modal (X)
+                                const closeBtn = document.querySelector('button[data-modal-hide="popup-modal"]');
+                                if (closeBtn) {
+                                    log('Popup trovato, chiudo...', 'info');
+                                    closeBtn.click();
+                                    setTimeout(() => {
+                                        log('Forzo play del video...', 'info');
+                                        video.play().catch(e => log('Errore play: ' + e.message, 'error'));
+                                        stallCount = 0; // Reset dello stall count
+                                    }, 300);
+                                } else {
+                                    log('Nessun popup trovato, skip video.', 'warn');
+                                    cleanup(); resolve();
+                                }
+                            }
                         } else {
                             stallCount = 0;
                         }
                         lastTime = video.currentTime;
-                    }, 1000);
+                    }, CONFIG.VIDEO_MONITOR_INTERVAL);
 
                     // Fallback tempo massimo: 3x durata o 180s se la durata manca
                     const maxMs = video.duration ? video.duration * 3000 : 180000;
@@ -269,6 +477,16 @@
                         clearInterval(monitor);
                         clearTimeout(maxTimer);
                         video.removeEventListener('ended', onEnd);
+                        document.removeEventListener('visibilitychange', handleVisibilityChange);
+                        // Ripristina il player se era nascosto
+                        if (CONFIG.HIDE_VIDEO_PLAYER) {
+                            const playerContainer = video.closest('.video-player, [class*="player"], [class*="video"]') || video.parentElement;
+                            if (playerContainer) {
+                                playerContainer.style.visibility = '';
+                                playerContainer.style.height = '';
+                                playerContainer.style.overflow = '';
+                            }
+                        }
                     }
                 }
 
@@ -383,9 +601,8 @@
     // ============ MAIN ============
     async function init() {
         createUI();
-
+        await sleep(8000);
         // Auto-scan iniziale (senza click, solo per popolare la UI)
-        await sleep(1500);
         await expandAllSections(); // Fondamentale: apre tutto per vedere cosa manca
         analyzeLessons(); // Popola la variabile "Da Fare" e salva in locale
 
