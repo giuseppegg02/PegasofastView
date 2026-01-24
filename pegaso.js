@@ -40,7 +40,10 @@
         isPlaying: false,
         status: 'idle',         // idle, scanning, playing, completed
         totalFound: 0,
-        alreadyDone: 0
+        alreadyDone: 0,
+        stopRequested: false,   // Flag per fermare l'elaborazione
+        startTime: null,        // Timestamp inizio elaborazione
+        estimatedEndTime: null  // Stima fine in millisecondi
     };
 
     // ============ LOGGER ============
@@ -182,6 +185,15 @@
         updateUI();
 
         for (let i = 0; i < items.length; i++) {
+            // Controlla se è stato richiesto uno stop
+            if (state.stopRequested) {
+                log(`⏹️  Elaborazione fermata dall'utente.`, 'warn');
+                state.status = 'idle';
+                state.stopRequested = false;
+                updateUI();
+                return;
+            }
+
             state.currentIndex = i;
             const item = items[i];
 
@@ -269,36 +281,35 @@
             }
         }
 
-        // Step 5: Selezione in blocco - scegli una risposta per ogni domanda molto rapidamente
+        // Step 5: Selezione in blocco - scegli una risposta per ogni domanda
         // Le opzioni sono dentro div con id="0", "1", "2", "3" (A, B, C, D)
         const answerOptions = document.querySelectorAll('.divide-y-2.bg-white .cursor-pointer[id]');
         log(`📝 [TEST] Trovate ${answerOptions.length} opzioni di risposta totali`, 'info');
+
+        const bulkSelect = async (grouped, delayMs) => {
+            const letterMap = ['A', 'B', 'C', 'D'];
+            for (let q = 0; q < grouped.length; q++) {
+                const opts = grouped[q];
+                const choiceIdx = 0; // scegliamo sempre A per velocità/stabilità
+                const el = opts[choiceIdx] || opts[Math.floor(Math.random() * opts.length)];
+                log(`📝 [TEST] Domanda ${q + 1}: seleziono risposta ${letterMap[choiceIdx]}`, 'info');
+                syntheticClick(el);
+                await sleep(delayMs);
+            }
+        };
 
         // Raggruppa le opzioni per domanda (ogni domanda ha 4 opzioni)
         const questionsCount = Math.floor(answerOptions.length / 4);
         log(`📝 [TEST] Stima domande: ${questionsCount}`, 'info');
 
+        const grouped = [];
         if (questionsCount > 0) {
-            // Prepariamo una lista di nodi per ogni domanda evitando scroll per velocità
-            const grouped = [];
             for (let q = 0; q < questionsCount; q++) {
                 const startIdx = q * 4;
                 const opts = Array.from(answerOptions).slice(startIdx, startIdx + 4);
                 if (opts.length) grouped.push(opts);
             }
-
-            // Seleziona rapidamente una risposta per ogni domanda senza scroll pesanti
-            const letterMap = ['A', 'B', 'C', 'D'];
-            for (let q = 0; q < grouped.length; q++) {
-                const opts = grouped[q];
-                // Scegli la prima opzione valida (più veloce e stabile) o random se preferisci
-                const choiceIdx = 0; // 0..3 - usare 0 per massima velocità
-                const el = opts[choiceIdx] || opts[Math.floor(Math.random() * opts.length)];
-                log(`📝 [TEST] Domanda ${q + 1}: seleziono risposta ${letterMap[choiceIdx]}`, 'info');
-                syntheticClick(el);
-                // Minimo delay per permettere al DOM di aggiornare lo stato (dipende da rete)
-                await sleep(20);
-            }
+            await bulkSelect(grouped, 20);
         } else {
             log(`📝 [TEST] Nessuna opzione trovata per le domande - salto selezione bulk`, 'warn');
         }
@@ -307,33 +318,71 @@
         await sleep(200);
 
         // Step 7: Cerca e clicca il pulsante "Invia"
-        let inviaBtn = null;
-        const allBtns = document.querySelectorAll('button');
-        for (const btn of allBtns) {
-            const btnText = btn.textContent.trim().toLowerCase();
-            if (btnText === 'invia' || btnText.includes('invia')) {
-                inviaBtn = btn;
-                break;
+        const findInviaBtn = () => {
+            const allBtns = document.querySelectorAll('button');
+            for (const btn of allBtns) {
+                const btnText = btn.textContent.trim().toLowerCase();
+                if (btnText === 'invia' || btnText.includes('invia')) return btn;
             }
+            return null;
+        };
+
+        async function submitOnce(label) {
+            const inviaBtn = findInviaBtn();
+            if (!inviaBtn) return false;
+            log(`📝 [TEST] ${label} pulsante "Invia", click...`, 'success');
+            inviaBtn.scrollIntoView({ behavior: 'auto', block: 'center' });
+            await sleep(120);
+            syntheticClick(inviaBtn);
+            return true;
         }
 
-        if (inviaBtn) {
-            log(`📝 [TEST] Trovato pulsante "Invia", click...`, 'success');
-            inviaBtn.scrollIntoView({ behavior: 'auto', block: 'center' });
-            await sleep(80);
-            syntheticClick(inviaBtn);
-            await sleep(500);
-            log(`📝 [TEST] Test completato!`, 'success');
-        } else {
-            log(`📝 [TEST] Pulsante "Invia" non trovato - verifico stato...`, 'warn');
-            // Controlla se tutte le risposte sono state selezionate
+        const didSubmit = await submitOnce('Trovato');
+        await sleep(800);
+
+        const stillInTest = !!findInviaBtn();
+        if (stillInTest) {
+            log(`📝 [TEST] Invio non confermato (possibile 400). Riprovo più lentamente...`, 'warn');
+            // Reseleziona con ritmi più lenti per evitare rifiuti lato server
+            if (grouped.length) await bulkSelect(grouped, 150);
+            await sleep(600);
+            await submitOnce('Retry: trovato');
+            await sleep(800);
+        }
+
+        // Verifica finale
+        if (findInviaBtn()) {
+            log(`📝 [TEST] Pulsante "Invia" ancora presente dopo retry - potrebbe servire un nuovo tentativo manuale`, 'warn');
             const selectedAnswers = document.querySelectorAll('.divide-y-2.bg-white .cursor-pointer.bg-platform-primary-light');
             log(`📝 [TEST] Risposte selezionate visibili: ${selectedAnswers.length}`, 'info');
+        } else if (didSubmit) {
+            log(`📝 [TEST] Test completato!`, 'success');
         }
 
         // Step 8: Attendi e torna alla lista
         await sleep(300);
         log(`📝 [TEST] Fine gestione test`, 'step');
+    }
+
+    function estimateItemSeconds(item) {
+        // Stimiamo la durata residua per il singolo item
+        const itemOverhead = 2.5; // scroll, click, sleep post-item
+        const speed = Math.max(CONFIG.PLAYBACK_SPEED || 1, 0.1);
+
+        if (item.type === 'objective') return 3.5 + itemOverhead;
+        if (item.type === 'test') return 15 + itemOverhead; // media osservata
+
+        // Video: limitiamo a 3x durata o 180s, ridotto dalla velocità
+        const dur = Number.isFinite(item.durationSeconds) ? item.durationSeconds : 90;
+        const base = Math.min(dur * 3, 180);
+        return base / speed + itemOverhead;
+    }
+
+    function calculateEstimatedTime() {
+        // Calcola il tempo stimato in base agli item in coda
+        const estimatedSeconds = state.queue.reduce((acc, item) => acc + estimateItemSeconds(item), 0);
+        // Aggiungi overhead per riscansioni (3 fasi * 2s per rescan)
+        return Math.ceil(estimatedSeconds + 6);
     }
 
     async function processQueue() {
@@ -344,6 +393,11 @@
         }
 
         state.status = 'playing';
+        state.stopRequested = false;
+        state.startTime = Date.now();
+        const estimatedTotalSecs = calculateEstimatedTime();
+        state.estimatedEndTime = state.startTime + (estimatedTotalSecs * 1000);
+        log(`⏱️  Tempo stimato: ~${Math.ceil(estimatedTotalSecs / 60)} minuti`, 'info');
         updateUI();
 
         // Prima tutti gli obiettivi
@@ -531,7 +585,24 @@
         if (!p) return;
 
         const remaining = state.queue.length - state.currentIndex;
-        const currentTitle = state.queue[state.currentIndex] ? state.queue[state.currentIndex].title : 'In attesa...';
+        const currentItem = state.queue[state.currentIndex];
+        const currentTitle = currentItem ? currentItem.title : 'In attesa...';
+        
+        // Calcola tempo rimanente stimato
+        let timeRemaining = '';
+        if (state.status === 'playing' && state.estimatedEndTime) {
+            const now = Date.now();
+            const secRemaining = Math.max(0, Math.ceil((state.estimatedEndTime - now) / 1000));
+            const minRemaining = Math.ceil(secRemaining / 60);
+            timeRemaining = `⏱️ ${minRemaining}m`;
+        }
+
+        // Stima del singolo episodio corrente
+        let currentEta = '';
+        if (currentItem) {
+            const etaSecs = Math.ceil(estimateItemSeconds(currentItem));
+            currentEta = etaSecs >= 60 ? `~${Math.ceil(etaSecs / 60)}m` : `~${etaSecs}s`;
+        }
 
         p.innerHTML = `
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
@@ -555,37 +626,46 @@
                 👉 <b>Corrente:</b> ${currentTitle}
             </div>
 
+            ${currentEta ? `<div style="margin-bottom:8px;text-align:center;color:#a5b4fc;font-weight:bold;">ETA episodio: ${currentEta}</div>` : ''}
+
+            ${timeRemaining ? `<div style="margin-bottom:8px;text-align:center;color:#fbbf24;font-weight:bold;">${timeRemaining}</div>` : ''}
+
             <div style="height:6px;background:#334155;border-radius:3px;overflow:hidden;margin-bottom:15px;">
                 <div id="p-bar" style="width:0%;height:100%;background:linear-gradient(90deg, #3b82f6, #8b5cf6);transition:width 0.5s;"></div>
             </div>
 
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
-                <button id="btn-scan" style="padding:8px;background:#475569;border:none;border-radius:6px;color:white;cursor:pointer;">
-                    🔍 Scansiona
+                <button id="btn-run" style="padding:8px;background:${state.status === 'playing' ? '#ef4444' : '#0ea5e9'};border:none;border-radius:6px;color:white;cursor:pointer;font-weight:bold;">
+                    ${state.status === 'playing' ? '⏹️ STOP' : '🚀 AVVIA'}
                 </button>
-                <button id="btn-run" style="padding:8px;background:#0ea5e9;border:none;border-radius:6px;color:white;cursor:pointer;font-weight:bold;">
-                    🚀 AVVIA
+                <button id="btn-rescan" style="padding:8px;background:#64748b;border:none;border-radius:6px;color:white;cursor:pointer;">
+                    🔄 Rescan
                 </button>
-            </div>
-            <div style="margin-top:10px;text-align:center;font-size:10px;color:#64748b;">
-                Velocità: ${CONFIG.PLAYBACK_SPEED}x | Soglia: ${CONFIG.REQUIRED_PERCENTAGE}%
             </div>
         `;
 
-        document.getElementById('btn-scan').onclick = async () => {
-            await expandAllSections();
-            analyzeLessons();
+        document.getElementById('btn-run').onclick = () => {
+            if (state.status === 'playing') {
+                // STOP
+                state.stopRequested = true;
+            } else {
+                // AVVIA
+                if (state.queue.length === 0) {
+                    expandAllSections().then(() => {
+                        analyzeLessons();
+                        processQueue();
+                    });
+                } else {
+                    processQueue();
+                }
+            }
         };
 
-        document.getElementById('btn-run').onclick = () => {
-             if (state.queue.length === 0) {
-                 expandAllSections().then(() => {
-                     analyzeLessons();
-                     processQueue();
-                 });
-             } else {
-                 processQueue();
-             }
+        document.getElementById('btn-rescan').onclick = async () => {
+            if (state.status !== 'playing') {
+                await expandAllSections();
+                analyzeLessons();
+            }
         };
     }
 
