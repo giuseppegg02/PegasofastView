@@ -364,6 +364,14 @@
         log(`📝 [TEST] Fine gestione test`, 'step');
     }
 
+    function formatTimeEstimate(minutes) {
+        // Converte minuti in formato ore:minuti se > 60 minuti
+        if (minutes < 60) return `${minutes}m`;
+        const hours = Math.floor(minutes / 60);
+        const mins = minutes % 60;
+        return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+    }
+
     function estimateItemSeconds(item) {
         // Stimiamo la durata residua per il singolo item
         const itemOverhead = 2.5; // scroll, click, sleep post-item
@@ -436,11 +444,25 @@
         updateUI();
     }
 
+    // Controlla il colore dell'icona del video per verificare il completamento
+    function isVideoCompletedByIcon(rowElement) {
+        // Cerca l'icona play con sfondo verde (bg-platform-green/20)
+        const greenContainer = rowElement.querySelector('.bg-platform-green\\/20');
+        if (greenContainer) {
+            const svg = greenContainer.querySelector('svg path');
+            if (svg && svg.getAttribute('fill') === '#2FA33D') {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // Gestore specifico del Video Player
     function handleVideo() {
         return new Promise((resolve) => {
             let attempts = 0;
             let wasPlayingBeforePause = false;
+            const currentVideoRow = state.queue[state.currentIndex] ? state.queue[state.currentIndex].element : null;
 
             const checkVideo = setInterval(async () => {
                 const video = document.querySelector('video#video');
@@ -494,8 +516,11 @@
                         // Aggiorna UI solo ogni 2 controlli per risparmiare risorse
                         if (stallCount % 2 === 0) updateProgressUI(perc, video.currentTime, video.duration);
 
-                        // Avanza se raggiunta la soglia
-                        if (perc >= CONFIG.REQUIRED_PERCENTAGE) { cleanup(); resolve(); return; }
+                        // Controlla il colore dell'icona video per il completamento
+                        if (currentVideoRow && isVideoCompletedByIcon(currentVideoRow)) {
+                            log('Video completato (icona verde rilevata)', 'success');
+                            cleanup(); resolve(); return;
+                        }
 
                         // Stall guard: se il tempo non avanza per 24s (2s * 12), chiudi popup e forza play
                         if (video.currentTime - lastTime < 0.1) {
@@ -628,7 +653,7 @@
 
             ${currentEta ? `<div style="margin-bottom:8px;text-align:center;color:#a5b4fc;font-weight:bold;">ETA episodio: ${currentEta}</div>` : ''}
 
-            ${timeRemaining ? `<div style="margin-bottom:8px;text-align:center;color:#fbbf24;font-weight:bold;">${timeRemaining}</div>` : ''}
+            ${state.estimatedEndTime ? `<div style="margin-bottom:8px;text-align:center;color:#fbbf24;font-weight:bold;">⏱️ ${formatTimeEstimate(Math.ceil(Math.max(0, state.estimatedEndTime - Date.now()) / 60000))}</div>` : ''}
 
             <div style="height:6px;background:#334155;border-radius:3px;overflow:hidden;margin-bottom:15px;">
                 <div id="p-bar" style="width:0%;height:100%;background:linear-gradient(90deg, #3b82f6, #8b5cf6);transition:width 0.5s;"></div>
