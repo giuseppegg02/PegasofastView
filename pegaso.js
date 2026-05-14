@@ -68,57 +68,192 @@
         return Infinity;
     }
 
-    // ============ ANALISI DOM & SEZIONI ============
+	    // ============ ANALISI DOM & SEZIONI ============
 
-    // Funzione robusta per aprire tutte le sezioni
-    async function expandAllSections() {
-        await sleep(CONFIG.INITIAL_SCAN_DELAY || 0);
-        log('Apertura e scansione sezioni...', 'step');
+	    function getLessonTitleFromRow(row, fallback) {
+	        const titleEl = row.querySelector('.text-base.flex.justify-between .mb-2');
+	        const title = titleEl ? titleEl.textContent.trim() : (fallback || '');
+	        return {
+	            title,
+	            titleLower: (title || '').toLowerCase()
+	        };
+	    }
 
-        const headers = document.querySelectorAll('.cursor-pointer.relative.align-middle');
-        for (const header of headers) {
-            const wrapper = header.closest('.relative.text-platform-sub-text');
-            if (!wrapper) continue;
+	    function getAccordionWrapperHeader(wrapper) {
+	        const header = wrapper.querySelector('.cursor-pointer.relative.align-middle');
+	        if (!header) return null;
+	        return header.closest('.relative.text-platform-sub-text') === wrapper ? header : null;
+	    }
 
-            const content = () => wrapper.querySelector('.border-t.text-platform-text');
-            const isClosed = () => {
-                const c = content();
-                return !c || c.offsetHeight === 0 || getComputedStyle(c).display === 'none';
-            };
+	    function getAccordionWrapperContent(wrapper) {
+	        return wrapper.querySelector('.border-t.text-platform-text');
+	    }
 
-            if (isClosed()) {
-                header.click();
-                await sleep(300);
-                // Fallback: prova il chevron interno se ancora chiuso
-                if (isClosed()) {
-                    const chevron = header.querySelector('svg, path');
-                    chevron && chevron.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-                    await sleep(300);
-                }
-            }
-        }
+	    function isElementVisible(el) {
+	        if (!el) return false;
+	        const style = getComputedStyle(el);
+	        return style.display !== 'none' && style.visibility !== 'hidden' && el.offsetHeight > 0;
+	    }
 
-        log('Tutte le sezioni dovrebbero essere aperte.', 'success');
-        await sleep(600);
-    }
+	    async function ensureAccordionWrapperOpen(wrapper) {
+	        const header = getAccordionWrapperHeader(wrapper);
+	        if (!header) return false;
 
-    // ============ LOGICA "COSA MANCA" ============
+	        const isClosed = () => {
+	            const content = getAccordionWrapperContent(wrapper);
+	            return !content || !isElementVisible(content);
+	        };
 
-    function analyzeLessons() {
-        state.queue = [];
-        state.totalFound = 0;
-        state.alreadyDone = 0;
-        const rows = document.querySelectorAll('.pr-3.py-2');
+	        if (!isClosed()) return true;
 
-        rows.forEach((row, index) => {
-            state.totalFound++;
+	        header.click();
+	        await sleep(250);
 
-            const titleEl = row.querySelector('.text-base.flex.justify-between .mb-2');
-            const title = titleEl ? titleEl.textContent.trim() : `Lezione ${index}`;
-            const titleLower = title.toLowerCase();
-            const durationEl = row.querySelector('.text-sm.text-platform-gray');
-            const durationText = durationEl ? durationEl.textContent.trim() : '';
-            const durationSeconds = parseDuration(durationText);
+	        // Fallback: prova il chevron interno se ancora chiuso
+	        if (isClosed()) {
+	            const chevron = header.querySelector('svg, path');
+	            chevron && chevron.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+	            await sleep(250);
+	        }
+
+	        const start = Date.now();
+	        while (isClosed() && Date.now() - start < 2500) {
+	            await sleep(100);
+	        }
+
+	        return !isClosed();
+	    }
+
+	    function getAccordionWrappersInScope(scopeEl) {
+	        return Array.from(scopeEl.querySelectorAll('.relative.text-platform-sub-text'))
+	            .filter((w) => getAccordionWrapperHeader(w));
+	    }
+
+	    function getTopLevelAccordionWrappers() {
+	        const all = getAccordionWrappersInScope(document);
+	        return all.filter((w) => !w.parentElement || !w.parentElement.closest('.relative.text-platform-sub-text'));
+	    }
+
+	    async function collectAllLessonRowContexts() {
+	        await sleep(CONFIG.INITIAL_SCAN_DELAY || 0);
+	        log('Scansione sezioni (compatibile con accordion a mutua esclusione)...', 'step');
+
+	        const contexts = [];
+	        const visitedWrappers = new Set();
+	        const visitedRows = new Set();
+
+	        const top = getTopLevelAccordionWrappers();
+	        if (top.length === 0) return contexts;
+
+	        const scanWrapper = async (wrapper, openHeaders) => {
+	            if (visitedWrappers.has(wrapper)) return;
+	            visitedWrappers.add(wrapper);
+
+	            const header = getAccordionWrapperHeader(wrapper);
+	            const pathHeaders = header ? [...openHeaders, header] : openHeaders;
+
+	            const opened = await ensureAccordionWrapperOpen(wrapper);
+	            if (!opened) return;
+
+	            const content = getAccordionWrapperContent(wrapper);
+	            if (!content) return;
+
+	            // Righe lezione dentro la sezione (incluse eventuali sotto-sezioni; dedup globale su elemento)
+	            const rowsInWrapper = Array.from(content.querySelectorAll('.pr-3.py-2'));
+	            for (let i = 0; i < rowsInWrapper.length; i++) {
+	                const row = rowsInWrapper[i];
+	                if (visitedRows.has(row)) continue;
+	                visitedRows.add(row);
+
+	                contexts.push({ row, wrapper, openHeaders: pathHeaders, rowIndexInWrapper: i });
+	            }
+
+	            // Sotto-sezioni (wrappers) disponibili solo a sezione aperta
+	            const childWrappers = getAccordionWrappersInScope(content).filter((child) => {
+	                const parent = child.parentElement ? child.parentElement.closest('.relative.text-platform-sub-text') : null;
+	                return parent === wrapper;
+	            });
+
+	            for (const child of childWrappers) {
+	                await scanWrapper(child, pathHeaders);
+	            }
+	        };
+
+	        for (const wrapper of top) {
+	            await scanWrapper(wrapper, []);
+	        }
+
+	        log(`Scansione completata: ${contexts.length} righe trovate (visitate almeno una volta).`, 'success');
+	        return contexts;
+	    }
+
+	    async function resolveItemElement(item) {
+	        // Riapre la catena di sezioni prima di interagire con la riga (in caso di DOM lazy/unmount)
+	        if (Array.isArray(item.openHeaders)) {
+	            for (const header of item.openHeaders) {
+	                const wrapper = header && header.closest ? header.closest('.relative.text-platform-sub-text') : null;
+	                if (wrapper) await ensureAccordionWrapperOpen(wrapper);
+	            }
+	        }
+
+	        const wrapper = item.wrapper || null;
+	        const content = wrapper ? (getAccordionWrapperContent(wrapper) || wrapper) : document;
+	        const rows = Array.from(content.querySelectorAll('.pr-3.py-2'));
+
+	        const wanted = (item.rowTitleLower || '').trim();
+	        if (wanted) {
+	            const matched = rows.find((r) => {
+	                const { titleLower } = getLessonTitleFromRow(r, '');
+	                return titleLower.trim() === wanted;
+	            });
+	            if (matched) {
+	                item.element = matched;
+	                return matched;
+	            }
+	        }
+
+	        if (Number.isFinite(item.rowIndexInWrapper) && rows[item.rowIndexInWrapper]) {
+	            item.element = rows[item.rowIndexInWrapper];
+	            return rows[item.rowIndexInWrapper];
+	        }
+
+	        return null;
+	    }
+
+	    // ============ LOGICA "COSA MANCA" ============
+
+	    async function analyzeLessons() {
+	        state.queue = [];
+	        state.totalFound = 0;
+	        state.alreadyDone = 0;
+
+	        let contexts = [];
+	        try {
+	            contexts = await collectAllLessonRowContexts();
+	        } catch (e) {
+	            log(`Errore durante la scansione sezioni: ${e && e.message ? e.message : e}`, 'error');
+	            contexts = [];
+	        }
+
+	        // Fallback: se non troviamo wrappers (layout diverso), analizziamo le righe visibili come prima
+	        if (!contexts.length) {
+	            const rows = Array.from(document.querySelectorAll('.pr-3.py-2'));
+	            contexts = rows.map((row, idx) => ({
+	                row,
+	                wrapper: row.closest('.relative.text-platform-sub-text') || document.body,
+	                openHeaders: [],
+	                rowIndexInWrapper: idx
+	            }));
+	        }
+
+	        for (let index = 0; index < contexts.length; index++) {
+	            const { row, wrapper, openHeaders, rowIndexInWrapper } = contexts[index];
+	            state.totalFound++;
+
+	            const { title, titleLower } = getLessonTitleFromRow(row, `Lezione ${index}`);
+	            const durationEl = row.querySelector('.text-sm.text-platform-gray');
+	            const durationText = durationEl ? durationEl.textContent.trim() : '';
+	            const durationSeconds = parseDuration(durationText);
 
             // Rileva obiettivi usando l'icona bullseye-arrow o il badge verde chiaro
             const hasBullseyeIcon = row.querySelector('path[id="bullseye-arrow"]') !== null;
@@ -133,35 +268,43 @@
             const hasEseguiButton = row.querySelector('button') && 
                                     row.querySelector('button').textContent.trim().toLowerCase().includes('esegui');
             
-            const isDispensa = titleLower.includes('dispensa');
+	            const isDispensa = titleLower.includes('dispensa');
 
-            if (isTest && hasEseguiButton && !isCompleted) {
-                // Test non completato - aggiungilo alla coda
-                log(`📝 TEST TROVATO: "${title}" - Pulsante Esegui presente`, 'info');
-                state.queue.push({
-                    element: row,
-                    title,
-                    type: 'test',
-                    id: index,
-                    durationSeconds: 0
-                });
-            } else if (!isCompleted && !isTest && !isDispensa) {
-                state.queue.push({
-                    element: row,
-                    title,
-                    type: isObjective ? 'objective' : 'video',
-                    id: index,
-                    durationSeconds: isObjective ? 0 : durationSeconds
-                });
-            } else {
-                state.alreadyDone++;
-            }
-        });
+	            if (isTest && hasEseguiButton && !isCompleted) {
+	                // Test non completato - aggiungilo alla coda
+	                log(`📝 TEST TROVATO: "${title}" - Pulsante Esegui presente`, 'info');
+	                state.queue.push({
+	                    element: row,
+	                    wrapper,
+	                    openHeaders,
+	                    rowTitleLower: titleLower,
+	                    rowIndexInWrapper,
+	                    title,
+	                    type: 'test',
+	                    id: index,
+	                    durationSeconds: 0
+	                });
+	            } else if (!isCompleted && !isTest && !isDispensa) {
+	                state.queue.push({
+	                    element: row,
+	                    wrapper,
+	                    openHeaders,
+	                    rowTitleLower: titleLower,
+	                    rowIndexInWrapper,
+	                    title,
+	                    type: isObjective ? 'objective' : 'video',
+	                    id: index,
+	                    durationSeconds: isObjective ? 0 : durationSeconds
+	                });
+	            } else {
+	                state.alreadyDone++;
+	            }
+	        }
 
-        const objectives = state.queue.filter(i => i.type === 'objective');
-        const tests = state.queue.filter(i => i.type === 'test');
-        const videos = state.queue.filter(i => i.type === 'video').sort((a, b) => a.durationSeconds - b.durationSeconds);
-        state.queue = [...objectives, ...tests, ...videos]; // Test dopo obiettivi, prima dei video
+	        const objectives = state.queue.filter(i => i.type === 'objective');
+	        const tests = state.queue.filter(i => i.type === 'test');
+	        const videos = state.queue.filter(i => i.type === 'video').sort((a, b) => a.durationSeconds - b.durationSeconds);
+	        state.queue = [...objectives, ...tests, ...videos]; // Test dopo obiettivi, prima dei video
 
         log(`Analisi: Trovate ${state.totalFound}. Già fatte: ${state.alreadyDone}. Mancanti: ${state.queue.length}`, 'info');
         log(`📍 OBIETTIVI DA COMPLETARE: ${objectives.length}`, 'warn');
@@ -172,19 +315,19 @@
         if (state.queue.length > 0) {
             log(`⏭️  PROSSIMO: ${state.queue[0].title} [${state.queue[0].type}]`, 'step');
         }
-        localStorage.setItem('pegaso_missing_queue', JSON.stringify(state.queue.map(i => i.title)));
-        updateUI();
-        return state.queue.length > 0;
-    }
+	        localStorage.setItem('pegaso_missing_queue', JSON.stringify(state.queue.map(i => i.title)));
+	        updateUI();
+	        return state.queue.length > 0;
+	    }
 
     // ============ AUTOMAZIONE ============
 
-    async function processItems(items) {
-        state.queue = items;
-        state.currentIndex = 0;
-        updateUI();
+	    async function processItems(items) {
+	        state.queue = items;
+	        state.currentIndex = 0;
+	        updateUI();
 
-        for (let i = 0; i < items.length; i++) {
+	        for (let i = 0; i < items.length; i++) {
             // Controlla se è stato richiesto uno stop
             if (state.stopRequested) {
                 log(`⏹️  Elaborazione fermata dall'utente.`, 'warn');
@@ -194,20 +337,26 @@
                 return;
             }
 
-            state.currentIndex = i;
-            const item = items[i];
+	            state.currentIndex = i;
+	            const item = items[i];
 
-            log(`Elaborazione ${i + 1}/${items.length}: ${item.title} [${item.type}]`, 'step');
+	            log(`Elaborazione ${i + 1}/${items.length}: ${item.title} [${item.type}]`, 'step');
 
-            item.element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            await sleep(500);
+	            const rowEl = await resolveItemElement(item);
+	            if (!rowEl) {
+	                log(`Elemento non risolto nel DOM, skip: ${item.title}`, 'warn');
+	                continue;
+	            }
 
-            const clickTarget = item.element.closest('.cursor-pointer') || item.element;
-            clickTarget.click();
+	            rowEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+	            await sleep(500);
 
-            if (item.type === 'objective') {
-                await sleep(3500);
-                markLocalAsDone(item.title);
+	            const clickTarget = rowEl.closest('.cursor-pointer') || rowEl;
+	            clickTarget.click();
+
+	            if (item.type === 'objective') {
+	                await sleep(3500);
+	                markLocalAsDone(item.title);
             } else if (item.type === 'video') {
                 await handleVideo();
                 markLocalAsDone(item.title);
@@ -417,25 +566,23 @@
         }
 
         // Riscansione ed esegui i test di fine lezione (subito dopo gli obiettivi)
-        log(`🔄 Riscansione per aggiornare la lista test...`, 'step');
-        await expandAllSections();
-        analyzeLessons();
-        const tests = state.queue.filter(i => i.type === 'test');
-        if (tests.length) {
-            log(`📝 FASE 2: Completamento di ${tests.length} TEST DI FINE LEZIONE`, 'success');
-            await processItems(tests);
-            log(`✅ FASE 2 COMPLETATA: Tutti i test sono stati completati`, 'success');
-        }
+	        log(`🔄 Riscansione per aggiornare la lista test...`, 'step');
+	        await analyzeLessons();
+	        const tests = state.queue.filter(i => i.type === 'test');
+	        if (tests.length) {
+	            log(`📝 FASE 2: Completamento di ${tests.length} TEST DI FINE LEZIONE`, 'success');
+	            await processItems(tests);
+	            log(`✅ FASE 2 COMPLETATA: Tutti i test sono stati completati`, 'success');
+	        }
 
-        // Riesegui la scansione ed esegui i video (ordinati per durata)
-        log(`🔄 Riscansione per aggiornare la lista video...`, 'step');
-        await expandAllSections();
-        analyzeLessons();
-        const videos = state.queue.filter(i => i.type === 'video');
-        if (videos.length) {
-            log(`🎬 FASE 3: Completamento di ${videos.length} VIDEO (dal più corto)`, 'success');
-            await processItems(videos);
-            log(`✅ FASE 3 COMPLETATA: Tutti i video sono stati completati`, 'success');
+	        // Riesegui la scansione ed esegui i video (ordinati per durata)
+	        log(`🔄 Riscansione per aggiornare la lista video...`, 'step');
+	        await analyzeLessons();
+	        const videos = state.queue.filter(i => i.type === 'video');
+	        if (videos.length) {
+	            log(`🎬 FASE 3: Completamento di ${videos.length} VIDEO (dal più corto)`, 'success');
+	            await processItems(videos);
+	            log(`✅ FASE 3 COMPLETATA: Tutti i video sono stati completati`, 'success');
         }
 
         log('Coda terminata!', 'success');
@@ -669,29 +816,25 @@
             </div>
         `;
 
-        document.getElementById('btn-run').onclick = () => {
-            if (state.status === 'playing') {
-                // STOP
-                state.stopRequested = true;
-            } else {
-                // AVVIA
-                if (state.queue.length === 0) {
-                    expandAllSections().then(() => {
-                        analyzeLessons();
-                        processQueue();
-                    });
-                } else {
-                    processQueue();
-                }
-            }
-        };
+	        document.getElementById('btn-run').onclick = () => {
+	            if (state.status === 'playing') {
+	                // STOP
+	                state.stopRequested = true;
+	            } else {
+	                // AVVIA
+	                if (state.queue.length === 0) {
+	                    analyzeLessons().then(() => processQueue());
+	                } else {
+	                    processQueue();
+	                }
+	            }
+	        };
 
-        document.getElementById('btn-rescan').onclick = async () => {
-            if (state.status !== 'playing') {
-                await expandAllSections();
-                analyzeLessons();
-            }
-        };
+	        document.getElementById('btn-rescan').onclick = async () => {
+	            if (state.status !== 'playing') {
+	                await analyzeLessons();
+	            }
+	        };
     }
 
     function updateProgressUI(percent, curr, total) {
@@ -704,17 +847,16 @@
     }
 
     // ============ MAIN ============
-    async function init() {
-        createUI();
-        await sleep(8000);
-        // Auto-scan iniziale (senza click, solo per popolare la UI)
-        await expandAllSections(); // Fondamentale: apre tutto per vedere cosa manca
-        analyzeLessons(); // Popola la variabile "Da Fare" e salva in locale
+	    async function init() {
+	        createUI();
+	        await sleep(8000);
+	        // Auto-scan iniziale (senza click, solo per popolare la UI)
+	        await analyzeLessons(); // Popola la variabile "Da Fare" e salva in locale (scansiona anche con accordion esclusivo)
 
-        // Se configurato auto-start
-        if (CONFIG.AUTO_START && state.queue.length > 0) {
-            processQueue();
-        }
+	        // Se configurato auto-start
+	        if (CONFIG.AUTO_START && state.queue.length > 0) {
+	            processQueue();
+	        }
     }
 
     init();
